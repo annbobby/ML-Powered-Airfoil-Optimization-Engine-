@@ -10,7 +10,7 @@ performance replacing expensive CFD simulations.
 👉 [Click here to download the initial raw airfoil dataset](https://drive.google.com/file/d/15dGixHSCzJ90UCxGj-P5T7UQd8BBsK60/view?usp=sharing)
 
 ## Airfoil Dataset Variable Definitions
-👉 [Click here to view the doc which contains the definitions of the variables used in this ML Project](
+👉 [Click here to view the doc which contains the definitions of the variables used in this ML Project](Airfoil_Dataset_Dictionary.docx)
 
 ## Team Members
 - Shyam Gayke
