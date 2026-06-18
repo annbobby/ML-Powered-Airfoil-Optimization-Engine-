@@ -12,6 +12,7 @@ Status  : Frontend ready — awaiting ML model files
 import streamlit as st
 import plotly.graph_objects as go
 import numpy as np
+import pandas as pd
 import joblib
 from datetime import datetime
 
@@ -27,24 +28,16 @@ st.set_page_config(
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MODEL LOADER
-# Integration point: replace None assignments with joblib.load() calls
-# once the ML team provides the trained .pkl files.
-#
-#   import joblib
-#   cl_model = joblib.load("models/cl_model.pkl")
-#   cd_model = joblib.load("models/cd_model.pkl")
-#   cm_model = joblib.load("models/cm_model.pkl")
-#
+# Loads the three trained Random Forest models from disk via joblib.
 # Wrapped in try/except so a missing or corrupted .pkl file cannot crash the
 # app — loading simply falls back to None, which keeps MODELS_READY False.
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_models():
-    cl_model = cd_model = cm_model = None
     try:
-        pass  # TODO: cl_model = joblib.load("models/cl_model.pkl")
-        # TODO: cd_model = joblib.load("models/cd_model.pkl")
-        # TODO: cm_model = joblib.load("models/cm_model.pkl")
+        cl_model = joblib.load("models/rf_cl.pkl")
+        cd_model = joblib.load("models/rf_cd.pkl")
+        cm_model = joblib.load("models/rf_cm.pkl")
     except Exception:
         cl_model = cd_model = cm_model = None
     return cl_model, cd_model, cm_model
@@ -73,43 +66,58 @@ def predict(features: dict) -> dict:
     Returns predicted aerodynamic coefficients for given input features.
 
     Model integration workflow: when MODELS_READY is True, this function
-    builds the feature vector, runs inference with the three Random Forest
-    regressors, and returns immediately — the placeholder branch below is
-    unreachable in that case. When models aren't loaded, fixed placeholder
-    values are returned so the UI remains fully testable.
+    builds a (1, 6) pandas DataFrame with named columns — matching the
+    DataFrame the models were trained on — validates it, and runs
+    inference with the three Random Forest regressors. Using named columns
+    instead of a raw NumPy array avoids scikit-learn's "X does not have
+    valid feature names" warning, since the underlying estimators were
+    fitted on a DataFrame with these exact column names.
+    When models aren't loaded (or validation fails), fixed placeholder
+    values are returned so the UI remains fully testable in demo mode.
 
     Parameters
     ----------
     features : dict
-        Keys (6 model inputs): reynolds, aoa, max_thickness,
-        thickness_location, max_camber, camber_location
+        Keys (6 model inputs, exact training order): reynolds, aoa,
+        max_thickness, thickness_location, max_camber, camber_location
 
     Returns
     -------
     dict with keys: cl, cd, cm, efficiency
         cl, cd, cm are model outputs; efficiency is derived as cl / cd.
     """
-    if MODELS_READY:
-        # TRAINING FEATURE ORDER:
-        # 1. reynolds  2. aoa  3. max_thickness
-        # 4. thickness_location  5. max_camber  6. camber_location
-        # WARNING: changing this order will break model predictions —
-        # it must match the order used during model training.
-        feature_vector = np.array([[
-            features["reynolds"],
-            features["aoa"],
-            features["max_thickness"],
-            features["thickness_location"],
-            features["max_camber"],
-            features["camber_location"],
-        ]])
-        cl = float(cl_model.predict(feature_vector)[0])
-        cd = float(cd_model.predict(feature_vector)[0])
-        cm = float(cm_model.predict(feature_vector)[0])
-        efficiency = cl / cd if cd != 0 else 0.0
-        return {"cl": cl, "cd": cd, "cm": cm, "efficiency": efficiency}
+    # TRAINING FEATURE ORDER:
+    # 1. reynolds  2. aoa  3. max_thickness
+    # 4. thickness_location  5. max_camber  6. camber_location
+    # WARNING: changing this order will break model predictions —
+    # it must match the order used during model training.
+    FEATURE_ORDER = [
+        "reynolds", "aoa", "max_thickness",
+        "thickness_location", "max_camber", "camber_location",
+    ]
 
-    # Placeholder values — only used while models aren't loaded
+    if MODELS_READY:
+        # Build a named-column DataFrame (matches the training data format)
+        feature_df = pd.DataFrame([features], columns=FEATURE_ORDER)
+
+        # Prediction validation — exact columns, correct order, no missing
+        # values, and a (1, 6) shape before inference.
+        valid = (
+            list(feature_df.columns) == FEATURE_ORDER
+            and not feature_df.isnull().values.any()
+            and feature_df.shape == (1, 6)
+        )
+
+        if not valid:
+            st.error("Invalid input data. Please check the input parameters.")
+        else:
+            cl = float(cl_model.predict(feature_df)[0])
+            cd = float(cd_model.predict(feature_df)[0])
+            cm = float(cm_model.predict(feature_df)[0])
+            efficiency = cl / cd if cd != 0 else 0.0
+            return {"cl": cl, "cd": cd, "cm": cm, "efficiency": efficiency}
+
+    # Placeholder values — used in demo mode or if validation fails
     cl = 0.82
     cd = 0.018
     cm = -0.05
@@ -412,38 +420,73 @@ with st.sidebar:
         min_value=1e4, max_value=1e7, value=1e6, step=1e5, format="%.0f",
         help="Re = ρVL/μ — dimensionless flow regime indicator"
     )
-    aoa = st.slider(
-        "Angle of Attack (°)",
-        min_value=-10.0, max_value=20.0, value=4.0, step=0.5,
-        help="Angle between the chord line and the freestream direction"
+
+    # ── Synchronized slider + number input helper ──────────────────────────
+    # Keeps a slider and a numeric input mirroring the same value. Streamlit
+    # ignores the `value=` argument for a widget once its `key` already has
+    # an entry in session_state, so synchronization must be done explicitly:
+    # each on_change callback writes the new value into both the shared key
+    # AND the other widget's own key before the next rerun renders it.
+    def _sync_slider_and_number(label, min_value, max_value, default, step, fmt, key):
+        slider_key = f"{key}_slider"
+        number_key = f"{key}_number"
+
+        if key not in st.session_state:
+            st.session_state[key] = default
+            st.session_state[slider_key] = default
+            st.session_state[number_key] = default
+
+        def _on_slider_change():
+            st.session_state[key] = st.session_state[slider_key]
+            st.session_state[number_key] = st.session_state[slider_key]
+
+        def _on_number_change():
+            st.session_state[key] = st.session_state[number_key]
+            st.session_state[slider_key] = st.session_state[number_key]
+
+        col_slider, col_number = st.columns([2, 1])
+        with col_slider:
+            st.slider(
+                label, min_value=min_value, max_value=max_value,
+                step=step, key=slider_key, on_change=_on_slider_change,
+            )
+        with col_number:
+            st.number_input(
+                label, min_value=min_value, max_value=max_value,
+                step=step, format=fmt, key=number_key, on_change=_on_number_change,
+                label_visibility="collapsed",
+            )
+        return st.session_state[key]
+
+    aoa = _sync_slider_and_number(
+        "Angle of Attack (°)", -10.0, 20.0, 4.0, 0.5, "%.1f", "aoa"
     )
 
     st.subheader("Geometry")
-    max_thickness = st.slider(
-        "Max Thickness (% chord)",
-        min_value=4.0, max_value=24.0, value=12.0, step=0.5,
+    max_thickness = _sync_slider_and_number(
+        "Max Thickness (% chord)", 4.0, 24.0, 12.0, 0.5, "%.1f", "max_thickness"
     )
-    thickness_location = st.slider(
-        "Thickness Location (% chord)",
-        min_value=20.0, max_value=60.0, value=30.0, step=1.0,
+    thickness_location = _sync_slider_and_number(
+        "Thickness Location (% chord)", 20.0, 60.0, 30.0, 1.0, "%.0f", "thickness_location"
     )
-    max_camber = st.slider(
-        "Max Camber (% chord)",
-        min_value=0.0, max_value=10.0, value=2.0, step=0.1,
+    max_camber = _sync_slider_and_number(
+        "Max Camber (% chord)", 0.0, 10.0, 2.0, 0.1, "%.1f", "max_camber"
     )
-    camber_location = st.slider(
-        "Camber Location (% chord)",
-        min_value=10.0, max_value=70.0, value=40.0, step=1.0,
+    camber_location = _sync_slider_and_number(
+        "Camber Location (% chord)", 10.0, 70.0, 40.0, 1.0, "%.0f", "camber_location"
     )
 
     st.divider()
-    predict_btn = st.button("Run Prediction", use_container_width=True, type="primary")
+    predict_btn = st.button("Run Prediction", width="stretch", type="primary")
 
-    # Clean, user-facing status — never exposes load exceptions
+    # Clean, user-facing status — never exposes load exceptions.
+    # Diagnostic check: all three models (rf_cl, rf_cd, rf_cm) must be
+    # loaded for MODELS_READY to be True (see MODEL LOADER section above).
     if MODELS_READY:
-        st.success("ML model active")
+        st.success("Random Forest models loaded successfully")
+        st.caption("**Model:** Random Forest Regressor  \n**Outputs:** Cl, Cd, Cm")
     else:
-        st.info("Using pre-loaded aerodynamic data")
+        st.error("Model loading error")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -499,10 +542,30 @@ with tab1:
     st.subheader("Predicted Coefficients")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Lift Coefficient (Cl)",         f"{cl:.4f}" if _has_results else "—")
-    c2.metric("Drag Coefficient (Cd)",          f"{cd:.4f}" if _has_results else "—")
-    c3.metric("Moment Coefficient (Cm)",        f"{cm_out:.4f}" if _has_results else "—")
-    c4.metric("Aerodynamic Efficiency (Cl/Cd)", f"{efficiency:.2f}" if _has_results else "—")
+    c1.metric(
+        "Lift Coefficient (Cl)", f"{cl:.4f}" if _has_results else "—",
+        help="Lift Coefficient (Cl) indicates how effectively the airfoil generates lift. "
+             "Higher values generally correspond to greater lifting capability."
+    )
+    c2.metric(
+        "Drag Coefficient (Cd)", f"{cd:.4f}" if _has_results else "—",
+        help="Drag Coefficient (Cd) indicates the aerodynamic resistance experienced by the "
+             "airfoil. Lower values generally correspond to better aerodynamic performance."
+    )
+    c3.metric(
+        "Moment Coefficient (Cm)", f"{cm_out:.4f}" if _has_results else "—",
+        help="Moment Coefficient (Cm) measures the pitching moment generated by the airfoil. "
+             "A positive Cm indicates a tendency for the nose to pitch upward. A negative Cm "
+             "indicates a tendency for the nose to pitch downward. Values closer to zero "
+             "generally indicate more balanced aerodynamic behavior."
+    )
+    c4.metric(
+        "Aerodynamic Efficiency (Cl/Cd)", f"{efficiency:.2f}" if _has_results else "—",
+        help="Aerodynamic Efficiency is the ratio of Lift Coefficient (Cl) to Drag Coefficient "
+             "(Cd). Higher values indicate the airfoil generates more lift for a given amount "
+             "of drag. A larger Cl/Cd ratio generally represents a more aerodynamically "
+             "efficient design."
+    )
 
     # ── Performance Summary ──────────────────────────────────────────────────
     if _has_results:
@@ -560,7 +623,7 @@ with tab1:
             "camber_location":    camber_location,
         },
     )
-    st.plotly_chart(airfoil_fig, use_container_width=True)
+    st.plotly_chart(airfoil_fig, width="stretch")
 
     # ── Current Airfoil Geometry card ────────────────────────────────────────
     with st.container():
@@ -579,24 +642,27 @@ with tab1:
 
     col_bar, col_gauge = st.columns([3, 2])
 
-    # Coefficient bar chart
+    # Coefficient bar chart — Cl and Cd only (Cm has its own card; different scale)
     with col_bar:
         bar_fig = go.Figure(go.Bar(
-            x=["Cl (Lift)", "Cd (Drag)", "Cm (Moment)"],
-            y=[cl, cd, cm_out],
-            marker_color=["#4C9BE8", "#E8874C", "#9B59B6"],
-            text=[f"{v:.4f}" for v in [cl, cd, cm_out]],
+            x=["Cl (Lift)", "Cd (Drag)"],
+            y=[cl, cd],
+            marker_color=["#4C9BE8", "#E8874C"],
+            text=[f"{v:.4f}" for v in [cl, cd]],
             textposition="outside",
+            textfont=dict(color="#6B7280"),
             width=0.4,
         ))
         bar_fig.update_layout(
-            title="Aerodynamic Coefficients",
+            title=dict(text="Aerodynamic Coefficients", font=dict(color="#6B7280")),
             height=350,
             margin=dict(l=20, r=20, t=40, b=20),
-            yaxis=dict(zeroline=True, gridcolor="rgba(128,128,128,0.3)"),
-            template="plotly"
+            xaxis=dict(tickfont=dict(color="#6B7280")),
+            yaxis=dict(zeroline=True, gridcolor="#e0e0e0", tickfont=dict(color="#6B7280")),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
         )
-        st.plotly_chart(bar_fig, use_container_width=True)
+        st.plotly_chart(bar_fig, width="stretch")
 
     # Aerodynamic Efficiency card
     with col_gauge:
@@ -619,6 +685,31 @@ with tab1:
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+    # ── Moment Coefficient card ──────────────────────────────────────────────
+    if abs(cm_out) < 0.01:
+        cm_interpretation = "Near-zero pitching moment"
+    elif cm_out > 0:
+        cm_interpretation = "Positive pitching moment"
+    else:
+        cm_interpretation = "Negative pitching moment"
+
+    st.markdown(f"""
+    <div style="background:white; border:1px solid #e0e0e0; border-radius:8px;
+                padding:24px; display:flex; flex-direction:column;
+                justify-content:center; align-items:center; text-align:center;">
+        <div style="font-size:14px; color:#6B7280; font-weight:600; margin-bottom:12px;">
+            Moment Coefficient (Cm)
+        </div>
+        <div style="font-size:48px; font-weight:800; color:#111827; line-height:1.1;">
+            {cm_out:.4f}
+        </div>
+        <div style="font-size:16px; font-weight:600; color:#374151; margin-top:14px;">
+            {cm_interpretation}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.caption("ℹ️ Positive Cm: nose pitches upward. Negative Cm: nose pitches downward.")
 
     # ── Input summary ────────────────────────────────────────────────────────
     with st.expander("View current input values"):
