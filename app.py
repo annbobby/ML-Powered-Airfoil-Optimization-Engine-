@@ -4,9 +4,12 @@ Airfoil Optimization Engine
 Streamlit frontend for aerodynamic performance prediction.
 ML backend: Random Forest surrogate models (joblib / .pkl).
 
-Authors : [Team Names]
-Course  : [Course Name]
-Status  : Frontend ready — awaiting ML model files
+Authors : tanmay
+          shyam
+          ann
+          gargi
+
+Status  : Frontend ready
 """
 
 import streamlit as st
@@ -38,13 +41,21 @@ def load_models():
         cl_model = joblib.load("models/rf_cl.pkl")
         cd_model = joblib.load("models/rf_cd.pkl")
         cm_model = joblib.load("models/rf_cm.pkl")
+        scaler = joblib.load("models/scaler.pkl")
     except Exception:
-        cl_model = cd_model = cm_model = None
-    return cl_model, cd_model, cm_model
+        cl_model = cd_model = cm_model = scaler = None
 
-cl_model, cd_model, cm_model = load_models()
-MODELS_READY = cl_model is not None and cd_model is not None and cm_model is not None
+    return cl_model, cd_model, cm_model, scaler
 
+
+cl_model, cd_model, cm_model, scaler = load_models()
+
+MODELS_READY = (
+    cl_model is not None
+    and cd_model is not None
+    and cm_model is not None
+    and scaler is not None
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION STATE
@@ -111,11 +122,20 @@ def predict(features: dict) -> dict:
         if not valid:
             st.error("Invalid input data. Please check the input parameters.")
         else:
-            cl = float(cl_model.predict(feature_df)[0])
-            cd = float(cd_model.predict(feature_df)[0])
-            cm = float(cm_model.predict(feature_df)[0])
+            feature_scaled = scaler.transform(feature_df.to_numpy())
+
+            cl = float(cl_model.predict(feature_scaled)[0])
+            cd = float(cd_model.predict(feature_scaled)[0])
+            cm = float(cm_model.predict(feature_scaled)[0])
+
             efficiency = cl / cd if cd != 0 else 0.0
-            return {"cl": cl, "cd": cd, "cm": cm, "efficiency": efficiency}
+
+            return {
+                "cl": cl,
+                "cd": cd,
+                "cm": cm,
+                "efficiency": efficiency,
+            }
 
     # Placeholder values — used in demo mode or if validation fails
     cl = 0.82
