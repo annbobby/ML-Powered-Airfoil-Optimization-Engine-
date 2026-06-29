@@ -4,3 +4,4 @@ numpy
 pandas
 joblib
 scikit-learn==1.6.1
+pygad==3.7.0
