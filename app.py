@@ -19,6 +19,8 @@ import pandas as pd
 import joblib
 from datetime import datetime
 
+from optimizer import run_optimization
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
@@ -67,6 +69,9 @@ if "results" not in st.session_state:
     st.session_state["results"] = None   # None = no prediction run yet
 if "last_prediction_time" not in st.session_state:
     st.session_state["last_prediction_time"] = None
+
+if "optimization_results" not in st.session_state:
+    st.session_state["optimization_results"] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -118,8 +123,8 @@ def predict(features: dict) -> dict:
             and not feature_df.isnull().values.any()
             and feature_df.shape == (1, 6)
         )
-
         if not valid:
+            
             st.error("Invalid input data. Please check the input parameters.")
         else:
             feature_scaled = scaler.transform(feature_df.to_numpy())
@@ -804,4 +809,77 @@ with tab2:
         st.caption("Optimization will be available once the ML model is connected.")
 
     if optimize_clicked and MODELS_READY:
-        st.success("Optimization complete.")
+
+        with st.spinner("Running genetic algorithm optimization..."):
+
+            st.session_state["optimization_results"] = run_optimization(
+                cl_model=cl_model,
+                cd_model=cd_model,
+                cm_model=cm_model,
+                scaler=scaler,
+                reynolds=reynolds,
+                aoa=aoa,
+                objective=objective,
+                iterations=n_iterations,
+                constraint_cl=constraint_cl,
+                constraint_cd=constraint_cd,
+            )
+
+    if st.session_state["optimization_results"] is not None:
+
+        result = st.session_state["optimization_results"]
+
+        st.success("Optimization completed successfully!")
+
+        st.subheader("Optimized Geometry")
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric(
+            "Max Thickness",
+            f"{result['max_thickness']:.2f}%"
+        )
+
+        c2.metric(
+            "Thickness Location",
+            f"{result['thickness_location']:.2f}%"
+        )
+
+        c3.metric(
+            "Max Camber",
+            f"{result['max_camber']:.2f}%"
+        )
+
+        c4.metric(
+            "Camber Location",
+            f"{result['camber_location']:.2f}%"
+        )
+
+        st.divider()
+
+        st.subheader("Predicted Performance")
+
+        p1, p2, p3, p4 = st.columns(4)
+
+        p1.metric("Cl", f"{result['cl']:.4f}")
+        p2.metric("Cd", f"{result['cd']:.4f}")
+        p3.metric("Cm", f"{result['cm']:.4f}")
+        p4.metric("Cl/Cd", f"{result['efficiency']:.2f}")
+
+        st.divider()
+
+        st.subheader("Convergence")
+
+        convergence = pd.DataFrame(
+            {
+                "Generation": range(
+                    1,
+                    len(result["fitness_history"]) + 1
+                ),
+                "Fitness": result["fitness_history"],
+            }
+        )
+
+        st.line_chart(
+            convergence.set_index("Generation")
+        )
