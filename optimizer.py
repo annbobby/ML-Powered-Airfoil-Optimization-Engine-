@@ -106,10 +106,10 @@ def predict_performance(
         [[
             reynolds,
             aoa,
-            solution[0],
-            solution[1],
-            solution[2],
-            solution[3],
+            solution[0] /100.0,
+            solution[1] /100.0,
+            solution[2] /100.0,
+            solution[3] /100.0,
         ]],
         columns=FULL_FEATURES,
     )

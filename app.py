@@ -116,6 +116,12 @@ def predict(features: dict) -> dict:
         # Build a named-column DataFrame (matches the training data format)
         feature_df = pd.DataFrame([features], columns=FEATURE_ORDER)
 
+        # UI sliders send geometry as percent-of-chord (e.g. 12.0 == 12%),
+        # but the scaler/models were fit on geometry as a 0-1 fraction
+        # (e.g. 0.12 == 12%). Convert here, before scaling.
+        geometry_cols = ["max_thickness", "thickness_location", "max_camber", "camber_location"]
+        feature_df[geometry_cols] = feature_df[geometry_cols] / 100.0
+
         # Prediction validation — exact columns, correct order, no missing
         # values, and a (1, 6) shape before inference.
         valid = (
