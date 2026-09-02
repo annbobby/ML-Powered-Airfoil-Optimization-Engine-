@@ -74,7 +74,7 @@ _GEOMETRY_BOUNDS = [
     (4.0,  24.0),   # max_thickness      (% chord)
     (20.0, 60.0),   # thickness_location (% chord)
     (0.0,  10.0),   # max_camber         (% chord)
-    (10.0, 70.0),   # camber_location    (% chord)
+    (0.0, 100.0),   # camber_location    (% chord)
 ]
 
 # GA hyperparameters — identical to the notebook.
